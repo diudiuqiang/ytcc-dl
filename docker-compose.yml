@@ -1,0 +1,30 @@
+services:
+  ytcc-dl:
+    # 本地构建：docker compose build
+    # 或先 buildx 多架构 push 后改为 image: yourname/ytcc-dl:latest
+    build:
+      context: .
+      # ARM 机型（如极空间 Z2S/Z4 瑞芯微）改为 platform: linux/arm64
+      # x86 机型（Z4S/Z423）用 linux/amd64
+      args:
+        TARGETPLATFORM: linux/amd64
+    # image: yourname/ytcc-dl:latest
+    container_name: ytcc-dl
+    # host 网络最省事：直接复用宿主网络访问 CookieCloud(192.168.31.116:10888) 与代理
+    # 若不想用 host，改用 ports + 确保容器与这些服务同网段
+    network_mode: host
+    # 若不用 host 网络，改为：
+    # ports:
+    #   - "8899:8899"
+    environment:
+      - COOKIECLOUD_HOST=http://192.168.31.116:10888
+      - CC_UUID=你的cookiecloud_uuid
+      - CC_PASSWORD=你的cookiecloud密码
+      # 海外站点（YouTube/X）走此代理；国内站点在代码里强制直连
+      - PROXY_OVERSEAS=http://192.168.31.99:10808
+      - OUT_DIR=/app/output
+      # 若代理本身需账号，可在此加 PROXY_AUTH
+    volumes:
+      # 下载产物持久化到极空间共享目录（容器重建不丢）
+      - /_volume1/共享盘/Downloads/ytcc:/app/output
+    restart: unless-stopped

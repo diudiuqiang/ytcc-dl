@@ -1,0 +1,38 @@
+# ===== 切勿入库：登录会话凭据（真实账号 cookie，泄露=账号被盗）=====
+*cookies.txt
+*cookie.txt
+*_cookies.txt
+smoke_cookies.txt
+x_cookies.txt
+youtube_cookies.txt
+weibo_cookies.txt
+bilibili_cookies.txt
+douyin_cookies.txt
+xiaohongshu_cookies.txt
+*.cookie
+# 凭据/密钥
+.env
+*.env
+*secret*
+*credential*
+
+# ===== 切勿入库：下载产物（含受版权保护的内容 + 体积巨大）=====
+ytdub_output/
+downloads/
+output/
+
+# ===== 构建产物 / 二进制（源码开源，exe 走 Release 附件，不进 git 历史）=====
+dist/
+build/
+__pycache__/
+*.pyc
+*.spec
+.build_venv/
+venv/
+# 构建所需的外部二进制（deno/ffmpeg），体积大且随版本变动，从官网获取后自行放入 tools/，不入库
+tools/*.exe
+
+# ===== 操作系统/编辑器杂项 =====
+.DS_Store
+Thumbs.db
+*.log
