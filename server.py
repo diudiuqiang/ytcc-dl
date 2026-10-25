@@ -3,7 +3,9 @@ ytcc-dl Web 入口（容器版）—— 包装 ytcc_dl.run_download，提供轻�
 
 设计要点：
 - 不依赖 GUI（tkinter 懒加载，无头环境 import 不炸）
-- 配置全部来自环境变量（COOKIECLOUD_HOST / CC_UUID / CC_PASSWORD / PROXY_OVERSEAS / OUT_DIR）
+- 配置优先级：环境变量（COOKIECLOUD_HOST / CC_UUID / CC_PASSWORD / PROXY_OVERSEAS / OUT_DIR）
+  > 本机保存的配置文件（本地直跑时与 GUI 共用同一份凭据，见 ytcc_config.py；
+  容器里无 APPDATA，自然回落为空，行为与原来一致）
 - 后台线程跑下载，SSE 把 run_download 的 log_fn 实时推给前端
 - 下载产物写到 OUT_DIR（容器已挂卷）
 
@@ -97,11 +99,16 @@ def _worker(task_id, url, platform, quality):
             STATE[task_id]["error"] = err
 
     try:
-        host = os.environ.get("COOKIECLOUD_HOST", "")
-        uuid = os.environ.get("CC_UUID", "")
-        password = os.environ.get("CC_PASSWORD", "")
+        # 环境变量优先；本地直跑（无环境变量）时回退到本机保存的配置，
+        # 与 GUI 共用同一份凭据。容器里无 APPDATA 目录，load 自然返回空，行为不变。
+        srv_cfg = {}
+        if getattr(ytcc, "ytcc_config", None) is not None:
+            srv_cfg, _st = ytcc.ytcc_config.load_config()
+        host = os.environ.get("COOKIECLOUD_HOST") or srv_cfg.get("cc_host", "")
+        uuid = os.environ.get("CC_UUID") or srv_cfg.get("cc_uuid", "")
+        password = os.environ.get("CC_PASSWORD") or srv_cfg.get("cc_password", "")
         conf = ytcc.PLATFORMS.get(platform, ytcc.PLATFORMS["YouTube"])
-        proxy = os.environ.get("PROXY_OVERSEAS", "") if conf.get("proxy_default") else ""
+        proxy = (os.environ.get("PROXY_OVERSEAS") or srv_cfg.get("proxy") or "") if conf.get("proxy_default") else ""
         out_dir = os.environ.get("OUT_DIR", "/app/output")
         os.makedirs(out_dir, exist_ok=True)
 

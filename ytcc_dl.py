@@ -28,6 +28,7 @@ import subprocess
 import hashlib
 import shutil
 import threading
+import time
 import urllib.request
 import urllib.parse
 
@@ -54,6 +55,13 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = HERE
     MEIPASS = HERE
+
+# 本地配置持久化（INI + DPAPI 加密 + 30 天自动销毁）：CookieCloud 凭据 / 代理
+# 一次录入本机复用。import 失败不致命——降级为「每次手填」，不影响下载主链路。
+try:
+    import ytcc_config
+except Exception:
+    ytcc_config = None
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +700,7 @@ class App:
         _ensure_tk()
         self.root = root
         root.title("ytcc-dl · 多平台视频下载器")
-        root.geometry("720x620")
+        root.geometry("720x680")
         root.resizable(True, True)
 
         self.tools = locate_tools()
@@ -722,61 +730,68 @@ class App:
         self.lbl_cc = ttk.Label(f, text="尚未拉取", foreground="gray")
         self.lbl_cc.grid(row=4, column=1, columnspan=2, sticky="w", padx=4)
 
+        # 保存配置：凭据写入本机配置文件，下次打开自动预填（密码 DPAPI 加密 + 30 天自毁）
+        self.btn_save = ttk.Button(f, text="💾 保存配置", command=self.on_save_config)
+        self.btn_save.grid(row=5, column=0, pady=4, sticky="w")
+        self.lbl_save = ttk.Label(f, text="", foreground="gray", font=("", 8))
+        self.lbl_save.grid(row=5, column=1, columnspan=2, sticky="w", padx=4)
+
         # --- 下载区 ---
         ttk.Label(f, text="下载设置", font=("", 10, "bold")).grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
+            row=6, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
-        ttk.Label(f, text="平台").grid(row=6, column=0, sticky="w")
+        ttk.Label(f, text="平台").grid(row=7, column=0, sticky="w")
         self.var_platform = tk.StringVar(value="YouTube")
         self.cb_plat = ttk.Combobox(f, textvariable=self.var_platform, width=16,
                                     values=list(PLATFORMS.keys()), state="readonly")
-        self.cb_plat.grid(row=6, column=1, sticky="w", padx=4)
+        self.cb_plat.grid(row=7, column=1, sticky="w", padx=4)
         self.cb_plat.bind("<<ComboboxSelected>>", self.on_platform_change)
         self.lbl_note = ttk.Label(f, text="", foreground="gray", font=("", 8))
-        self.lbl_note.grid(row=6, column=2, sticky="w", padx=4)
+        self.lbl_note.grid(row=7, column=2, sticky="w", padx=4)
 
-        ttk.Label(f, text="视频 URL").grid(row=7, column=0, sticky="w")
+        ttk.Label(f, text="视频 URL").grid(row=8, column=0, sticky="w")
         self.e_url = ttk.Entry(f, width=60)
-        self.e_url.grid(row=7, column=1, columnspan=2, sticky="ew", padx=4)
+        self.e_url.grid(row=8, column=1, columnspan=2, sticky="ew", padx=4)
 
-        ttk.Label(f, text="画质").grid(row=8, column=0, sticky="w")
+        ttk.Label(f, text="画质").grid(row=9, column=0, sticky="w")
         self.var_quality = tk.StringVar(value="1080p")
         self.cb_q = ttk.Combobox(f, textvariable=self.var_quality, width=16,
                                 values=list(QUALITY_PRESETS.keys()), state="readonly")
-        self.cb_q.grid(row=8, column=1, sticky="w", padx=4)
+        self.cb_q.grid(row=9, column=1, sticky="w", padx=4)
         # 输出格式固定为 mp4（跨设备兼容，避免 mkv 在手机/别的机器上无声）；
         # 「兼容模式」复选框控制是否把视频重编码为 H.264（默认开，手机最稳）。
-        ttk.Label(f, text="代理").grid(row=9, column=0, sticky="w")
+        ttk.Label(f, text="代理").grid(row=10, column=0, sticky="w")
         self.e_proxy = ttk.Entry(f, width=30)
-        self.e_proxy.grid(row=9, column=1, sticky="ew", padx=4)
+        self.e_proxy.grid(row=10, column=1, sticky="ew", padx=4)
         self.var_reencode = tk.BooleanVar(value=True)
         ttk.Checkbutton(f, text="兼容模式(重编码H.264)", variable=self.var_reencode).grid(
-            row=9, column=2, sticky="w", padx=4)
+            row=10, column=2, sticky="w", padx=4)
 
-        ttk.Label(f, text="自定义格式").grid(row=10, column=0, sticky="w")
+        ttk.Label(f, text="自定义格式").grid(row=11, column=0, sticky="w")
         self.e_fmt = ttk.Entry(f, width=50)
-        self.e_fmt.grid(row=10, column=1, columnspan=2, sticky="ew", padx=4)
+        self.e_fmt.grid(row=11, column=1, columnspan=2, sticky="ew", padx=4)
         self.e_fmt.insert(0, "选「自定义」画质时生效，如 bv[height<=720]+ba/best")
 
-        ttk.Label(f, text="输出目录").grid(row=11, column=0, sticky="w")
+        ttk.Label(f, text="输出目录").grid(row=12, column=0, sticky="w")
         self.e_out = ttk.Entry(f, width=50)
         self.e_out.insert(0, os.path.join(APP_DIR, "ytcc-dl_output"))
-        self.e_out.grid(row=11, column=1, sticky="ew", padx=4)
-        ttk.Button(f, text="浏览", command=self.on_browse).grid(row=11, column=2, padx=4)
+        self.e_out.grid(row=12, column=1, sticky="ew", padx=4)
+        ttk.Button(f, text="浏览", command=self.on_browse).grid(row=12, column=2, padx=4)
 
         self.btn_dl = ttk.Button(f, text="② 开始下载", command=self.on_download)
-        self.btn_dl.grid(row=12, column=0, pady=6, sticky="w")
+        self.btn_dl.grid(row=13, column=0, pady=6, sticky="w")
 
-        # --- 日志（放在所有控件下方，行号必须 > 下载按钮的 row=12，否则格子重叠）---
+        # --- 日志（放在所有控件下方，行号必须 > 下载按钮的 row，否则格子重叠）---
         ttk.Label(f, text="运行日志", font=("", 10, "bold")).grid(
-            row=13, column=0, columnspan=3, sticky="w", pady=(8, 2))
+            row=14, column=0, columnspan=3, sticky="w", pady=(8, 2))
         self.log = scrolledtext.ScrolledText(f, width=90, height=18, state="disabled",
                                              font=("Consolas", 9))
-        self.log.grid(row=14, column=0, columnspan=3, sticky="nsew")
-        f.rowconfigure(14, weight=1)
+        self.log.grid(row=15, column=0, columnspan=3, sticky="nsew")
+        f.rowconfigure(15, weight=1)
         f.columnconfigure(1, weight=1)
 
         self.on_platform_change()
+        self._load_saved_config()
         self._check_tools()
 
     def _check_tools(self):
@@ -800,14 +815,83 @@ class App:
             self.e_out.insert(0, d)
 
     def on_platform_change(self, event=None):
-        """切换平台时同步：提示语 + 代理默认值（国内站点直连，海外走代理）。"""
+        """切换平台时同步：提示语 + 代理默认值（国内站点直连，海外走代理）。
+        代理框已有用户自定义值（非空且不等于任何平台默认值）时不动它——
+        否则切个平台就把用户手填/配置记忆里的代理冲掉了。"""
         plat = self.var_platform.get()
         conf = PLATFORMS.get(plat, {})
         note = conf.get("note", "")
         self.lbl_note.configure(text=note if note else "")
-        # 同步代理默认值
-        self.e_proxy.delete(0, "end")
-        self.e_proxy.insert(0, conf.get("proxy_default", ""))
+        cur = self.e_proxy.get().strip()
+        known_defaults = {c.get("proxy_default", "") for c in PLATFORMS.values()}
+        if not cur or cur in known_defaults:
+            self.e_proxy.delete(0, "end")
+            self.e_proxy.insert(0, conf.get("proxy_default", ""))
+
+    # ------------------------------------------------------------------
+    # 本地配置持久化：启动预填 / 手动保存 / 拉取成功后自动续期
+    # ------------------------------------------------------------------
+    def _load_saved_config(self):
+        """启动时把本机保存的 CookieCloud 凭据 + 代理预填进输入框。
+        必须在 on_platform_change() 之后调用——否则平台默认代理会把
+        保存的代理值覆盖掉。"""
+        if ytcc_config is None:
+            return
+        cfg, status = ytcc_config.load_config()
+        path = ytcc_config.config_path()
+        if status == "expired":
+            self.log_msg(
+                f"ℹ 本地配置超过 {ytcc_config.CONFIG_MAX_AGE_DAYS} 天未使用已自动销毁，请重新填写")
+        elif status == "error":
+            self.log_msg("⚠ 本地配置文件损坏已忽略（重新填写后保存即可）")
+        elif status == "ok":
+            for entry, key in ((self.e_host, "cc_host"), (self.e_uuid, "cc_uuid"),
+                               (self.e_pass, "cc_password"), (self.e_proxy, "proxy")):
+                val = cfg.get(key) or ""
+                if val:
+                    entry.delete(0, "end")
+                    entry.insert(0, val)
+            saved = time.strftime("%Y-%m-%d %H:%M", time.localtime(cfg.get("saved_at", 0)))
+            self.log_msg(f"✓ 已加载本机保存的配置（{saved} 保存，下次打开自动填入）")
+            self.lbl_save.configure(text=f"配置来源：{path}", foreground="gray")
+            if cfg.get("warning"):
+                self.log_msg("⚠ " + cfg["warning"])
+
+    def on_save_config(self):
+        """手动保存：把当前四个字段写进本机配置文件。"""
+        if ytcc_config is None:
+            messagebox.showinfo("不可用", "当前运行环境不支持配置持久化")
+            return
+        host = self.e_host.get().strip()
+        uuid = self.e_uuid.get().strip()
+        pwd = self.e_pass.get().strip()
+        if not (host and uuid and pwd):
+            messagebox.showwarning("缺少参数",
+                                   "保存配置需要完整的 Host / UUID / 密码（代理可留空）")
+            return
+        if not host.lower().startswith(("http://", "https://")):
+            messagebox.showwarning("Host 格式", "CookieCloud 地址需以 http:// 或 https:// 开头")
+            return
+        try:
+            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip())
+        except Exception as e:
+            messagebox.showerror("保存失败", str(e))
+            return
+        self.lbl_save.configure(text=f"已保存 → {path}", foreground="green")
+        self.log_msg(f"✓ 配置已保存到 {path}"
+                     f"（密码已加密；{ytcc_config.CONFIG_MAX_AGE_DAYS} 天不使用自动销毁）")
+
+    def _autosave_config(self, host, uuid, pwd):
+        """拉取 cookie 成功 = 凭据已验证，顺手刷新配置（顺带续期 30 天）。
+        必须在主线程调用（会读输入框）。失败只警告不打断主流程。"""
+        if ytcc_config is None:
+            return
+        try:
+            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip())
+            self.lbl_save.configure(text=f"已自动保存 → {path}", foreground="green")
+            self.log_msg("✓ 凭据验证成功，配置已自动保存（下次打开自动填入）")
+        except Exception as e:
+            self.log_msg(f"⚠ 配置自动保存失败（不影响本次使用）：{e}")
 
     def _cookie_domains(self, plat):
         return PLATFORMS.get(plat, {}).get("domains", ("youtube.com",))
@@ -840,6 +924,8 @@ class App:
                     foreground="green"))
                 self.root.after(0, lambda: self.log_msg(
                     f"✓ CookieCloud 解密成功，{n} 条 {plat} cookie 已写入"))
+                # 凭据已验证：顺手刷新本地配置（下次打开自动填入，并续期 30 天）
+                self.root.after(0, lambda: self._autosave_config(host, uuid, pwd))
             except Exception as e:
                 emsg = str(e)
                 self.root.after(0, lambda: self.lbl_cc.configure(text="拉取失败", foreground="red"))
@@ -948,10 +1034,20 @@ def smoke_mode(args):
         fh.flush()
 
     try:
-        host = args.get("--host") or ""
-        uuid = args.get("--uuid")
-        password = args.get("--password")
+        # 本地保存的配置作默认值，优先级：命令行显式参数 > 配置文件 > 平台默认
+        cfg, cfg_status = ({}, "missing")
+        if ytcc_config is not None:
+            cfg, cfg_status = ytcc_config.load_config()
+            if cfg_status == "expired":
+                log(f"ℹ 本地配置超过 {ytcc_config.CONFIG_MAX_AGE_DAYS} 天未使用已自动销毁")
+            elif cfg_status == "error":
+                log("⚠ 本地配置文件损坏，已忽略")
+        host = args.get("--host") or cfg.get("cc_host") or ""
+        uuid = args.get("--uuid") or cfg.get("cc_uuid")
+        password = args.get("--password") or cfg.get("cc_password")
         url = args.get("--url")
+        if cfg_status == "ok" and (cfg.get("cc_host") or cfg.get("cc_uuid")):
+            log("ℹ 使用本机保存的配置（--host/--uuid/--password/--proxy 可覆盖）")
         if not host:
             log("✗ 缺少 --host（CookieCloud 服务器地址，如 http://192.168.1.100:10888）")
             return 2
@@ -960,7 +1056,7 @@ def smoke_mode(args):
         _conf = PLATFORMS.get(_plat, PLATFORMS["YouTube"])
         proxy = args.get("--proxy")
         if proxy is None:
-            proxy = _conf.get("proxy_default", "http://127.0.0.1:10808")
+            proxy = cfg.get("proxy") or _conf.get("proxy_default", "http://127.0.0.1:10808")
         out_dir = args.get("--out") or os.path.join(APP_DIR, "smoke_out")
         reencode = "--no-reencode" not in args
         platform = _plat

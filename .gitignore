@@ -18,6 +18,8 @@ xiaohongshu_cookies.txt
 
 # ===== 切勿入库：下载产物（含受版权保护的内容 + 体积巨大）=====
 ytdub_output/
+ytcc-dl_output/
+smoke_out/
 downloads/
 output/
 

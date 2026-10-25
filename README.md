@@ -40,6 +40,7 @@
 1. 在 Edge/Chrome 装 **CookieCloud 扩展**，把已登录各平台的 cookie 同步到你的局域网服务器（CookieCloud 可按域名同步多个站点）。
 2. 打开 `ytcc-dl.exe`：
    - 填 **Host / UUID / 密码**（你的 CookieCloud 服务器；默认值是占位符，必须改成真实地址）；
+   - 点 **💾 保存配置**——凭据存入本机配置文件，**下次打开自动填入，不用再手填**（详见下文「本地配置记忆」）；
    - 【下载设置】里选 **平台**（或直接粘贴链接，工具会根据链接域名自动识别平台）；
    - 点 **① 拉取 Cookies**（按所选平台从服务端解密出对应域名 cookie，写到对应 `*_cookies.txt`）；
    - 填 **视频 URL**（支持上述短链）；选 **画质**；勾选 **兼容模式(重编码 H.264)**；
@@ -51,7 +52,19 @@
 
 3. 文件落在输出目录（`ytcc-dl_output/`），日志区实时显示进度。
 
-> ⚠️ cookie 文件等同你的登录凭证，用完建议删除；CookieCloud 密码也不要长期明文留存。
+> ⚠️ cookie 文件等同你的登录凭证，用完建议删除。
+
+## 本地配置记忆（一次录入，本机复用）
+
+CookieCloud 的 Host / UUID / 密码、代理地址这些本机固定参数，只需填一次：
+
+- 点 **💾 保存配置**（或每次 **① 拉取 Cookies** 成功后自动保存）写入配置文件，之后每次打开自动预填；
+- 配置文件位置：`%APPDATA%\ytcc-dl\config.ini`（Windows；其他平台在 `~/.config/ytcc-dl/`），可用环境变量 `YTCC_CONFIG_PATH` 覆盖；
+- **密码字段加密存储**：Windows 用 DPAPI（同一个用户、同一台机器才能解密，拷到别处即废字节）；`host` / `uuid` / `代理` 为明文——需要变更时可直接手改；
+- **30 天自动销毁**：超过 30 天没有成功使用记录，配置文件自动删除，下次打开提示重填（常用的人每次拉取 cookie 成功都会自动续期，碰不到销毁）；
+- 删除配置文件 = 重置；GUI 日志区会显示当前配置来源与保存时间。
+
+命令行（`--smoke`）与 `server.py` 同样遵循「显式参数 / 环境变量 > 本机配置 > 平台默认」的优先级。
 
 ## 命令行 / 自动化模式（`--smoke`）
 
@@ -75,7 +88,7 @@ ytcc-dl.exe --smoke \
 
 `server.py` 把下载能力包装成轻量 Web UI + SSE 进度，适合部署到 NAS / 服务器（如极空间），无头环境运行。
 
-- 配置全部来自环境变量（或 `.env`，模板见 `.env.example`）：`COOKIECLOUD_HOST` / `CC_UUID` / `CC_PASSWORD` / `PROXY_OVERSEAS` / `OUT_DIR` / `HOST_DOWNLOAD_DIR`
+- 配置优先级：环境变量（或 `.env`，模板见 `.env.example`：`COOKIECLOUD_HOST` / `CC_UUID` / `CC_PASSWORD` / `PROXY_OVERSEAS` / `OUT_DIR` / `HOST_DOWNLOAD_DIR`）> 本机保存的配置文件（本地直跑时与 GUI 共用同一份凭据）；容器内无 APPDATA，自然回落为空
 - 启动后浏览器访问 `http://<服务器IP>:8899`；平台下拉框从 `PLATFORMS` 动态生成，加平台只改主程序一处
 - 多个下载任务自动串行（代理/PATH 等进程级环境由此获得确定性语义）
 - cookie 文件写在独立运行目录，**绝不混进下载产物目录**（避免分享产物时顺手泄露凭证）
@@ -104,9 +117,11 @@ mkdir -p tools && cp <你的 deno.exe> tools/deno.exe && cp <你的 ffmpeg.exe> 
 ```
 ytcc-dl/
 ├── ytcc_dl.py          # 主程序（GUI + 下载逻辑 + 短链解析，tkinter 懒加载）
+├── ytcc_config.py      # 本地配置持久化（INI + DPAPI 加密 + 30 天自动销毁）
 ├── server.py           # 可选 Flask Web 服务（Docker / 服务端模式）
 ├── build_exe.py        # PyInstaller 构建脚本
 ├── requirements.txt
+├── tests/              # 单元测试（python -m unittest discover -s tests）
 ├── .env.example        # Docker / server 模式配置模板（复制为 .env 填真实值）
 ├── Dockerfile          # Docker 草案
 ├── docker-compose.yml  # Docker 草案
