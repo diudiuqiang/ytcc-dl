@@ -30,8 +30,21 @@ import shutil
 import threading
 import urllib.request
 import urllib.parse
-import tkinter as tk
-from tkinter import ttk, scrolledtext, filedialog, messagebox
+
+# tkinter 延迟到 GUI 模式才 import：server.py 在无头容器里 import 本模块时，
+# 不再因缺 python3-tk 直接崩（镜像可省掉 ~50MB 的 tk 依赖）。
+tk = None
+ttk = scrolledtext = filedialog = messagebox = None
+
+
+def _ensure_tk():
+    """GUI 模式入口：加载 tkinter 全家桶到模块全局。幂等，可重复调用。"""
+    global tk, ttk, scrolledtext, filedialog, messagebox
+    if tk is not None:
+        return
+    import tkinter as _tk
+    from tkinter import ttk as _ttk, scrolledtext as _sc, filedialog as _fd, messagebox as _mb
+    tk, ttk, scrolledtext, filedialog, messagebox = _tk, _ttk, _sc, _fd, _mb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
@@ -61,11 +74,13 @@ def _search_binary(name, extra_dirs=None):
 
 def locate_tools():
     """返回 {deno: path, ffmpeg: path}，并确保 tools/ 下有权限可写的副本。"""
+    # 回退搜索路径只放「与用户目录无关」的通用位置；imageio_ffmpeg 的安装路径
+    # 用 expanduser 动态拼（避免把本机用户名写进开源仓库）。
+    _ffmpeg_fallback = os.path.join(
+        os.path.expanduser("~"), ".workbuddy", "binaries", "python", "envs",
+        "default", "Lib", "site-packages", "imageio_ffmpeg", "binaries")
     deno = _search_binary("deno.exe", [os.path.join(os.getcwd(), ".tools", "deno")])
-    ffmpeg = _search_binary(
-        "ffmpeg.exe",
-        [r"C:/Users/youqw/.workbuddy/binaries/python/envs/default/Lib/site-packages/imageio_ffmpeg/binaries"],
-    )
+    ffmpeg = _search_binary("ffmpeg.exe", [_ffmpeg_fallback])
     # 冻结版：把 _MEIPASS 里的二进制拷到 APP_DIR/tools，避免每次解包
     tools_dir = os.path.join(APP_DIR, "tools")
     os.makedirs(tools_dir, exist_ok=True)
@@ -284,6 +299,15 @@ PLATFORMS = {
         "proxy_default": "",
         "note": "部分内容需登录 cookie；支持 xhslink.com / xhslink.cn 短链直连解析；国内站点建议直连",
     },
+    "TikTok": {
+        "domains": ("tiktok.com",),
+        "cookie_file": "tiktok_cookies.txt",
+        "need_cookie": False,
+        "proxy_default": "http://127.0.0.1:10808",
+        # 风控实况（2026-10-25 测）：国内直连不可达；本地代理出口多被 TikTok 标记
+        # ("Your IP address is blocked")，遇此报错就换干净落地（如自己的 VPS 节点）。
+        "note": "公开视频可免登录；国内被墙须走代理；⚠ 代理出口 IP 被墙会报 IP blocked，换干净落地即可",
+    },
 }
 
 # 链接 host → 平台（用于自动识别，避免用户选错平台导致 cookie/代理不匹配）
@@ -295,6 +319,9 @@ PLATFORM_HOST_HINTS = {
     "weibo.com": "微博 (Weibo)", "weibo.cn": "微博 (Weibo)", "t.cn": "微博 (Weibo)",
     "xiaohongshu.com": "小红书 (Xiaohongshu)", "xhslink.com": "小红书 (Xiaohongshu)",
     "xhslink.cn": "小红书 (Xiaohongshu)",
+    # TikTok：vm.tiktok.com 短链由 yt-dlp 的 TikTokVMIE 原生解析，**不要**加进
+    # 下面的 SHORT_LINK_HOSTS 自研解析（反而坏事）；这里只做平台自动识别。
+    "tiktok.com": "TikTok", "vm.tiktok.com": "TikTok",
 }
 
 
@@ -444,9 +471,9 @@ def is_valid_media_url(url):
     # Windows 绝对路径：C:\... 或 C:/...（会触发 urllib 把 c: 当协议）
     if _re.match(r'^[A-Za-z]:[\\/]', s):
         return False, ("你输入的像是本地文件路径（%s…），不是视频链接。\n"
-                       "请粘贴以 http(s):// 开头的 YouTube / X 视频网页地址。" % s[:40])
+                       "请粘贴以 http(s):// 开头的视频网页地址。" % s[:40])
     if s.lower().startswith("file:"):
-        return False, "你输入的是本地文件协议（file://），本工具只支持从 YouTube / X 在线下载。\n请粘贴网页视频地址。"
+        return False, "你输入的是本地文件协议（file://），本工具只支持在线下载视频网页。\n请粘贴网页视频地址。"
     if not _re.match(r'^https?://', s, _re.IGNORECASE):
         return False, "URL 必须以 http:// 或 https:// 开头。当前输入：%s" % s[:60]
     return True, ""
@@ -455,12 +482,41 @@ def is_valid_media_url(url):
 # ---------------------------------------------------------------------------
 # 下载（yt-dlp import API）
 # ---------------------------------------------------------------------------
+# run_download 会改写进程级 os.environ（代理 / PATH）供 deno 子进程与 yt-dlp
+# 内部请求使用。多线程并发下载时这些全局变量会互相污染（一个任务设代理、
+# 另一个清空），故用全局锁把整个下载段串行化——server.py 的多任务模式
+# 由此获得确定性的环境语义，GUI 模式本就是一次一个，无感。
+_DOWNLOAD_LOCK = threading.Lock()
+
+
 def run_download(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
-                 to_mp4, log_fn, done_fn, fmt=None, reencode=True, platform=None):
+                 log_fn, done_fn, fmt=None, reencode=True, platform=None,
+                 cc_host=None):
+    import yt_dlp
+
+    with _DOWNLOAD_LOCK:
+        _run_download_locked(url, cookies_file, proxy, deno_path, ffmpeg_path,
+                             out_dir, log_fn, done_fn, fmt=fmt,
+                             reencode=reencode, platform=platform, cc_host=cc_host)
+
+
+def _run_download_locked(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
+                         log_fn, done_fn, fmt=None, reencode=True,
+                         platform=None, cc_host=None):
     import yt_dlp
 
     os.makedirs(out_dir, exist_ok=True)
     ffmpeg_dir = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
+
+    # done_fn 只允许调用一次：run_download 内部各失败路径都会调，server.py 若再
+    # 兜底调用会双重触发（前端收到两次"完成"、GUI 按钮状态抖动）。
+    _done_state = {"called": False}
+
+    def done_once(ok, path, err):
+        if _done_state["called"]:
+            return
+        _done_state["called"] = True
+        done_fn(ok, path, err)
 
     # 微博 t.cn 短链：yt-dlp 的 WeiboIE 不认，先解析成 weibo.com / weibo.cn 真链再下
     _resolved = resolve_short_url(url)
@@ -468,14 +524,21 @@ def run_download(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
         log_fn(f"ℹ 短链解析：{url} → {_resolved}")
         url = _resolved
 
-    # deno 子进程 / yt-dlp 内部网络都要走代理
+    # deno 子进程 / yt-dlp 内部网络都要走代理。
+    # no_proxy 只放本机回环 + CookieCloud 主机名（动态提取，不硬编码内网 IP）——
+    # 保证拉过 cookie 的局域网服务后续请求仍直连，同时不把拓扑写进开源仓库。
+    _no_proxy_hosts = ["localhost", "127.0.0.1"]
+    if cc_host:
+        _cc_h = _host_of(cc_host)
+        if _cc_h and _cc_h not in _no_proxy_hosts:
+            _no_proxy_hosts.append(_cc_h)
     env_proxy = proxy or ""
     if env_proxy:
         os.environ["HTTPS_PROXY"] = env_proxy
         os.environ["HTTP_PROXY"] = env_proxy
         os.environ["DENO_PROXY"] = env_proxy
         os.environ["DENO_NO_PROXY"] = ""
-        os.environ["no_proxy"] = "192.168.31.116,localhost,127.0.0.1"
+        os.environ["no_proxy"] = ",".join(_no_proxy_hosts)
     else:
         # 国内站点（B站/抖音/微博）建议直连，显式清空代理避免误走海外代理导致失败
         for _k in ("HTTPS_PROXY", "HTTP_PROXY", "DENO_PROXY", "ALL_PROXY"):
@@ -548,16 +611,30 @@ def run_download(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
             vid = info.get("id")
             title = info.get("title", vid)
             duration = info.get("duration") or 0
-            # 定位合并后的文件
-            import glob
-            cands = sorted(glob.glob(os.path.join(out_dir, f"{title}.*")))
-            cands = [c for c in cands if c.lower().endswith((".mkv", ".mp4", ".webm", ".mov"))]
-            final_path = cands[-1] if cands else None
+            # 定位实际产出文件：优先用 yt-dlp 记录的 requested_downloads[].filepath
+            # （真实落盘路径）。旧实现用 glob(title.*) + cands[-1] 有两个静默坑：
+            # ① title 含 glob 元字符（[ ] * ?）或 "/"（yt-dlp 替换为全角）时匹配
+            #    失败，final_path=None 直接跳过转码；
+            # ② 输出目录里有历史同名文件时 cands[-1] 会拿到旧文件——转码甚至
+            #    删除错误的对象。requested_downloads 天然一一对应，无此问题。
+            try:
+                for rd in reversed(info.get("requested_downloads") or []):
+                    fp = rd.get("filepath")
+                    if fp and os.path.exists(fp):
+                        final_path = fp
+                        break
+            except Exception:
+                final_path = None
+            if not final_path:
+                # 兜底（图集/特殊 playlist 形态 requested_downloads 可能为空）
+                import glob as _glob
+                cands = sorted(_glob.glob(os.path.join(out_dir, f"{title}.*")))
+                cands = [c for c in cands if c.lower().endswith((".mkv", ".mp4", ".webm", ".mov"))]
+                final_path = cands[-1] if cands else None
         log_fn(f"✓ 下载完成：{title}（{(duration or 0):.0f}s）")
 
         # 始终输出 mp4：mkv 在不少手机 / Windows 自带播放器 / 别的机器上会无声或打不开，
         # 统一转成跨设备兼容的 mp4（音频强制 aac，视频兼容模式重编码为 H.264）。
-        # to_mp4 保留为参数仅兼容调用方，实际行为恒为「输出 mp4」。
         if final_path and ffmpeg_path:
             if final_path.lower().endswith(".mp4"):
                 # 已是 mp4（如微博/部分平台返回单流 mp4，无需合并），直接采用，
@@ -599,12 +676,12 @@ def run_download(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
                 else:
                     log_fn("⚠ mp4 转封装失败，保留原始下载文件")
                     log_fn(proc.stderr[-500:] if proc.stderr else "")
-        done_fn(True, final_path, None)
+        done_once(True, final_path, None)
     except Exception as e:
-        import traceback
         log_fn("✗ 下载失败：" + str(e))
-        log_fn(traceback.format_exc().splitlines()[-3:])
-        done_fn(False, final_path, str(e))
+        import traceback
+        log_fn(traceback.format_exc())
+        done_once(False, final_path, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +689,7 @@ def run_download(url, cookies_file, proxy, deno_path, ffmpeg_path, out_dir,
 # ---------------------------------------------------------------------------
 class App:
     def __init__(self, root):
+        _ensure_tk()
         self.root = root
         root.title("ytcc-dl · 多平台视频下载器")
         root.geometry("720x620")
@@ -627,12 +705,12 @@ class App:
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         ttk.Label(f, text="Host").grid(row=1, column=0, sticky="w")
         self.e_host = ttk.Entry(f, width=30)
-        self.e_host.insert(0, "http://192.168.31.116:10888")
+        self.e_host.insert(0, "http://your-cc-host:10888")
         self.e_host.grid(row=1, column=1, columnspan=2, sticky="ew", padx=4)
 
         ttk.Label(f, text="UUID").grid(row=2, column=0, sticky="w")
         self.e_uuid = ttk.Entry(f, width=30)
-        self.e_uuid.insert(0, "popoleaf")
+        self.e_uuid.insert(0, "your-cookiecloud-uuid")
         self.e_uuid.grid(row=2, column=1, columnspan=2, sticky="ew", padx=4)
 
         ttk.Label(f, text="密码").grid(row=3, column=0, sticky="w")
@@ -668,10 +746,6 @@ class App:
         self.cb_q.grid(row=8, column=1, sticky="w", padx=4)
         # 输出格式固定为 mp4（跨设备兼容，避免 mkv 在手机/别的机器上无声）；
         # 「兼容模式」复选框控制是否把视频重编码为 H.264（默认开，手机最稳）。
-        self.var_mp4 = tk.BooleanVar(value=True)
-        ttk.Checkbutton(f, text="输出 MP4（已默认·跨设备兼容）", variable=self.var_mp4,
-                        state="disabled").grid(row=8, column=2, sticky="w", padx=4)
-
         ttk.Label(f, text="代理").grid(row=9, column=0, sticky="w")
         self.e_proxy = ttk.Entry(f, width=30)
         self.e_proxy.grid(row=9, column=1, sticky="ew", padx=4)
@@ -686,7 +760,7 @@ class App:
 
         ttk.Label(f, text="输出目录").grid(row=11, column=0, sticky="w")
         self.e_out = ttk.Entry(f, width=50)
-        self.e_out.insert(0, os.path.join(APP_DIR, "ytdub_output"))
+        self.e_out.insert(0, os.path.join(APP_DIR, "ytcc-dl_output"))
         self.e_out.grid(row=11, column=1, sticky="ew", padx=4)
         ttk.Button(f, text="浏览", command=self.on_browse).grid(row=11, column=2, padx=4)
 
@@ -808,8 +882,7 @@ class App:
             return
 
         proxy = self.e_proxy.get().strip()
-        out_dir = self.e_out.get().strip() or os.path.join(APP_DIR, "ytdub_output")
-        to_mp4 = self.var_mp4.get()
+        out_dir = self.e_out.get().strip() or os.path.join(APP_DIR, "ytcc-dl_output")
         quality = self.var_quality.get()
         cust = self.e_fmt.get().strip()
         if quality == "自定义":
@@ -821,7 +894,7 @@ class App:
         reencode = self.var_reencode.get()
         self.btn_dl.configure(state="disabled")
         self.log_msg("=" * 60)
-        self.log_msg(f"▶ 平台={plat}  画质={quality}  MP4={to_mp4}  兼容模式={reencode}")
+        self.log_msg(f"▶ 平台={plat}  画质={quality}  兼容模式={reencode}")
 
         def done(ok, path, err):
             if ok:
@@ -832,9 +905,10 @@ class App:
 
         def work():
             run_download(url, cpath, proxy, self.tools["deno"],
-                         self.tools["ffmpeg"], out_dir, to_mp4,
+                         self.tools["ffmpeg"], out_dir,
                          lambda m: self.root.after(0, lambda: self.log_msg(m)),
-                         done, fmt=fmt, reencode=reencode, platform=plat)
+                         done, fmt=fmt, reencode=reencode, platform=plat,
+                         cc_host=self.e_host.get().strip())
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -874,10 +948,13 @@ def smoke_mode(args):
         fh.flush()
 
     try:
-        host = args.get("--host") or "http://192.168.31.116:10888"
+        host = args.get("--host") or ""
         uuid = args.get("--uuid")
         password = args.get("--password")
         url = args.get("--url")
+        if not host:
+            log("✗ 缺少 --host（CookieCloud 服务器地址，如 http://192.168.1.100:10888）")
+            return 2
         # 代理默认按平台：海外站点走代理，国内站点（B站/抖音/微博）直连
         _plat = args.get("--platform") or "YouTube"
         _conf = PLATFORMS.get(_plat, PLATFORMS["YouTube"])
@@ -885,7 +962,6 @@ def smoke_mode(args):
         if proxy is None:
             proxy = _conf.get("proxy_default", "http://127.0.0.1:10808")
         out_dir = args.get("--out") or os.path.join(APP_DIR, "smoke_out")
-        to_mp4 = "--no-mp4" not in args
         reencode = "--no-reencode" not in args
         platform = _plat
         quality = args.get("--quality") or "1080p"
@@ -913,8 +989,8 @@ def smoke_mode(args):
 
         log(f"▶ 开始下载：{url} [platform={platform}] [format={fmt}] [reencode={reencode}]")
         run_download(url, cookies_file, proxy, tools["deno"], tools["ffmpeg"],
-                     out_dir, to_mp4, log, lambda ok, p, e: None, fmt=fmt,
-                     reencode=reencode, platform=platform)
+                     out_dir, log, lambda ok, p, e: None, fmt=fmt,
+                     reencode=reencode, platform=platform, cc_host=host)
         log("✓ smoke 完成，详见上方日志")
         return 0
     except Exception as e:
@@ -927,6 +1003,7 @@ def smoke_mode(args):
 
 
 def main():
+    _ensure_tk()
     argv = sys.argv[1:]
     if "--smoke" in argv:
         sys.exit(smoke_mode(parse_kv(argv)))

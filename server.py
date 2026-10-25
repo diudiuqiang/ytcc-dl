@@ -25,6 +25,9 @@ except Exception:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 运行时私有目录（cookie 等凭证的落点）：优先 /tmp，容器/服务端均不与产物目录混淆
+APP_RUNTIME_DIR = os.environ.get("YTCC_RUNTIME_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else HERE, ".ytcc_runtime")
 spec = importlib.util.spec_from_file_location("ytcc_dl", os.path.join(HERE, "ytcc_dl.py"))
 ytcc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ytcc)
@@ -49,8 +52,7 @@ pre{background:#0b1020;color:#cde;padding:12px;border-radius:8px;max-height:320p
 <h2>ytcc-dl · 多平台视频下载</h2>
 <div class="row">
   <select id="platform">
-    <option>YouTube</option><option>X (Twitter)</option><option>Bilibili (B站)</option>
-    <option>抖音 (Douyin)</option><option>微博 (Weibo)</option><option>小红书 (Xiaohongshu)</option>
+    {{ platform_options|safe }}
   </select>
   <input id="quality" value="1080p" placeholder="画质 如 1080p / 720p">
 </div>
@@ -71,6 +73,13 @@ function start(){
 """
 
 
+def _platform_options():
+    """平台下拉从 ytcc.PLATFORMS 动态生成——加平台只改主程序一处。"""
+    return "\n    ".join(
+        f"<option{' selected' if name == 'YouTube' else ''}>{name}</option>"
+        for name in ytcc.PLATFORMS)
+
+
 def _worker(task_id, url, platform, quality):
     logs = []
     with _LOCK:
@@ -88,7 +97,7 @@ def _worker(task_id, url, platform, quality):
             STATE[task_id]["error"] = err
 
     try:
-        host = os.environ.get("COOKIECLOUD_HOST", "http://192.168.31.116:10888")
+        host = os.environ.get("COOKIECLOUD_HOST", "")
         uuid = os.environ.get("CC_UUID", "")
         password = os.environ.get("CC_PASSWORD", "")
         conf = ytcc.PLATFORMS.get(platform, ytcc.PLATFORMS["YouTube"])
@@ -98,30 +107,35 @@ def _worker(task_id, url, platform, quality):
 
         # 拉 cookie（若配置了凭据）
         cookies_file = None
-        if uuid and password:
+        if uuid and password and host:
             try:
                 text, n = ytcc.fetch_cookies(host, uuid, password, domains=conf.get("domains"))
-                cookies_file = os.path.join(out_dir, "cookies.txt")
+                # cookie 是登录凭证：放独立子目录，绝不混进 OUT_DIR 产物
+                # （用户同步/分享下载目录时不会顺手把凭证带出去）。
+                cc_dir = os.path.join(APP_RUNTIME_DIR, "_cc")
+                os.makedirs(cc_dir, exist_ok=True)
+                cookies_file = os.path.join(cc_dir, f"{platform}_cookies.txt")
                 with open(cookies_file, "w", encoding="utf-8") as f:
                     f.write(text)
-                log_fn(f"✓ CookieCloud 拉取成功（{n} 条 {platform} cookie）")
+                log_fn(f"✓ CookieCloud 拉取成功（{n} 条 {platform} cookie → {cookies_file}）")
             except Exception as e:
                 log_fn(f"⚠ 拉取 cookie 失败（将尝试免登录）：{e}")
                 cookies_file = None
+        elif not host:
+            log_fn("⚠ 未配置 COOKIECLOUD_HOST，跳过拉取 cookie，尝试免登录下载")
 
         tools = ytcc.locate_tools()
         fmt = ytcc.build_format(quality)
         ytcc.run_download(url, cookies_file, proxy, tools["deno"], tools["ffmpeg"],
-                          out_dir, True, log_fn, done_fn, fmt=fmt, reencode=True, platform=platform)
-        if STATE[task_id]["status"] not in ("done", "error"):
-            done_fn(True, out_dir, None)
+                          out_dir, log_fn, done_fn, fmt=fmt, reencode=True,
+                          platform=platform, cc_host=host)
     except Exception as e:
         done_fn(False, None, str(e))
 
 
 @app.route("/")
 def index():
-    return render_template_string(PAGE)
+    return render_template_string(PAGE, platform_options=_platform_options())
 
 
 @app.route("/download", methods=["POST"])

@@ -36,3 +36,5 @@ tools/*.exe
 .DS_Store
 Thumbs.db
 *.log
+generated-videos/
+_bak_pre_fix/

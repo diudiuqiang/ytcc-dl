@@ -1,8 +1,8 @@
 # ytcc-dl — CookieCloud 视频下载器（独立 exe 版）
 
-把「从 **CookieCloud** 拉已登录 cookie → **yt-dlp 2026.08 三件套**下载 →（可选）mp4 转封装」整套链路，**封装成一个带界面的单文件 exe**。无需 Python 环境，双击即用。
+把「从 **CookieCloud** 拉已登录 cookie → **yt-dlp 2026.08 三件套**下载 → 统一 mp4 转封装」整套链路，**封装成一个带界面的单文件 exe**。无需 Python 环境，双击即用。
 
-支持 **YouTube / X(Twitter) / B站 / 抖音 / 微博 / 小红书** 六大平台，并自动解析各平台的短链（`t.cn`、`v.douyin.com`、`xhslink.com` / `xhslink.cn`）。
+支持 **YouTube / X(Twitter) / B站 / 抖音 / 微博 / 小红书 / TikTok** 七大平台，并自动解析各平台的短链（`t.cn`、`v.douyin.com`、`xhslink.com` / `xhslink.cn`）。
 
 ## 解决了什么
 
@@ -26,23 +26,30 @@
 | `v.douyin.com/...` | `douyin.com/video/<id>` | `DouyinIE` 只认完整链接 |
 | `xhslink.com/...` / `xhslink.cn/...` | `xiaohongshu.com/explore/<id>` | 强制要求 `www.` 前缀；真链常藏在 `redirectPath=` 参数里（含 404/login 中转页） |
 
-> 推特 `t.co` 由 `TwitterShortenerIE` 原生支持、油管 `youtu.be` 由 `YoutubeIE` 原生支持，均无需额外处理。
+> 推特 `t.co` 由 `TwitterShortenerIE` 原生支持、油管 `youtu.be` 由 `YoutubeIE` 原生支持、TikTok `vm.tiktok.com` 由 `TikTokVMIE` 原生支持，均无需额外处理。
+
+## ⚠️ TikTok 专有说明
+
+- TikTok 国内不可直连，**必须走代理**（平台切换时代理框会自动填 `http://127.0.0.1:10808`，按你的实际代理改）。
+- TikTok 对代理出口 IP 有风控：命中时报 `Your IP address is blocked from accessing this post`。这不是工具问题——**换一个干净落地**（如你自己的 VPS 节点）即可，家宽/住宅 IP 通过率最高。
+- 公开视频免登录；部分区域/年龄限制内容需登录 cookie（CookieCloud 同步 `tiktok.com` 域名后照常拉取）。
+- 图集（photo post）视 yt-dlp 版本支持程度而定，老版本可能只取到封面，遇此情况升级 yt-dlp。
 
 ## 用法（桌面 GUI）
 
 1. 在 Edge/Chrome 装 **CookieCloud 扩展**，把已登录各平台的 cookie 同步到你的局域网服务器（CookieCloud 可按域名同步多个站点）。
 2. 打开 `ytcc-dl.exe`：
-   - 填 **Host / UUID / 密码**（你的 CookieCloud 服务器）；
+   - 填 **Host / UUID / 密码**（你的 CookieCloud 服务器；默认值是占位符，必须改成真实地址）；
    - 【下载设置】里选 **平台**（或直接粘贴链接，工具会根据链接域名自动识别平台）；
    - 点 **① 拉取 Cookies**（按所选平台从服务端解密出对应域名 cookie，写到对应 `*_cookies.txt`）；
-   - 填 **视频 URL**（支持上述短链）；选 **画质**；勾选 **转 MP4** 与 **兼容模式(重编码 H.264)**；
+   - 填 **视频 URL**（支持上述短链）；选 **画质**；勾选 **兼容模式(重编码 H.264)**；
    - 点 **② 开始下载**。
 
 > **画质预设**：`1080p`（默认）/ `2K(1440p)` / `4K(2160p)` / `最佳` / `自定义`。
 
-> ⚠️ **为什么默认要重编码（兼容模式）？** YouTube 现在大量推 **AV1** 编码，很多手机/老旧播放器没有 AV1 解码器。工具会自动探测：遇到 **AV1 / VP9 / HEVC** 会重编码为 **H.264(yuv420p)**；已是 H.264 则直接 copy。
+> **输出恒为 mp4**（跨设备兼容，避免 mkv 在手机/别的机器上无声），没有开关、也不需要开关。**兼容模式**控制是否把视频重编码为 H.264——YouTube 现在大量推 AV1 编码，很多手机/老旧播放器没有 AV1 解码器；工具自动探测，遇到 AV1/VP9/HEVC 重编码为 H.264(yuv420p)，已是 H.264 则直接 copy。
 
-3. 文件落在输出目录（`ytdub_output/`），日志区实时显示进度。
+3. 文件落在输出目录（`ytcc-dl_output/`），日志区实时显示进度。
 
 > ⚠️ cookie 文件等同你的登录凭证，用完建议删除；CookieCloud 密码也不要长期明文留存。
 
@@ -53,12 +60,12 @@ ytcc-dl.exe --smoke \
   --host "http://192.168.1.100:10888" \
   --uuid "your-cookiecloud-uuid" \
   --password "你的密码" \
-  --url "https://www.youtube.com/watch?v=xxxx" \
+  --url "https://www.tiktok.com/@user/video/1234567890" \
   --proxy "http://127.0.0.1:10808" \
-  --platform "YouTube" \          # YouTube / X (Twitter) / Bilibili (B站) / 抖音 (Douyin) / 微博 (Weibo) / 小红书 (Xiaohongshu)
+  --platform "TikTok" \        # YouTube / X (Twitter) / Bilibili (B站) / 抖音 (Douyin) / 微博 (Weibo) / 小红书 (Xiaohongshu) / TikTok
   --quality "1080p" \
   --format "bv[height<=480]+ba/best[height<=480]" \  # 仅当 --quality 自定义时生效
-  --out "downloads" --no-mp4 \   # --no-mp4 跳过 mp4；--no-reencode 关闭重编码（极速模式）
+  --out "downloads" --no-reencode \   # --no-reencode 关闭重编码（极速模式，可能产出手机播不了的 AV1）
 ```
 
 - 日志同时写 `smoke.log`（与 exe 同目录）并回显，不需要 GUI 窗口。
@@ -68,9 +75,11 @@ ytcc-dl.exe --smoke \
 
 `server.py` 把下载能力包装成轻量 Web UI + SSE 进度，适合部署到 NAS / 服务器（如极空间），无头环境运行。
 
-- 配置全部来自环境变量：`COOKIECLOUD_HOST` / `CC_UUID` / `CC_PASSWORD` / `PROXY_OVERSEAS` / `OUT_DIR`
-- 启动后浏览器访问 `http://<服务器IP>:8899`
-- 配套 `Dockerfile` / `docker-compose.yml` / `DOCKER_ASSESSMENT.md` 为草案，可按需自行构建
+- 配置全部来自环境变量（或 `.env`，模板见 `.env.example`）：`COOKIECLOUD_HOST` / `CC_UUID` / `CC_PASSWORD` / `PROXY_OVERSEAS` / `OUT_DIR` / `HOST_DOWNLOAD_DIR`
+- 启动后浏览器访问 `http://<服务器IP>:8899`；平台下拉框从 `PLATFORMS` 动态生成，加平台只改主程序一处
+- 多个下载任务自动串行（代理/PATH 等进程级环境由此获得确定性语义）
+- cookie 文件写在独立运行目录，**绝不混进下载产物目录**（避免分享产物时顺手泄露凭证）
+- 配套 `Dockerfile` / `docker-compose.yml` / `DOCKER_ASSESSMENT.md` 为草案，可按需自行构建；镜像已无需 `python3-tk`（tkinter 懒加载）
 
 ## 从源码构建 exe
 
@@ -84,7 +93,7 @@ cd ytcc-dl
 mkdir -p tools && cp <你的 deno.exe> tools/deno.exe && cp <你的 ffmpeg.exe> tools/ffmpeg.exe
 
 # 2) 用含 tkinter 的 Python 建 venv（推荐系统 Python 3.10）
-C:/Users/youqw/AppData/Local/Programs/Python/Python310/python.exe -m venv .build_venv
+<你的 Python 3.10 路径>/python.exe -m venv .build_venv   # 例：C:/Python310/python.exe
 .build_venv/Scripts/python.exe -m pip install -r requirements.txt
 .build_venv/Scripts/python.exe build_exe.py
 # 产物： dist/ytcc-dl.exe  （已内嵌 deno.exe + ffmpeg.exe）
@@ -94,10 +103,11 @@ C:/Users/youqw/AppData/Local/Programs/Python/Python310/python.exe -m venv .build
 
 ```
 ytcc-dl/
-├── ytcc_dl.py          # 主程序（GUI + 下载逻辑 + 短链解析）
+├── ytcc_dl.py          # 主程序（GUI + 下载逻辑 + 短链解析，tkinter 懒加载）
 ├── server.py           # 可选 Flask Web 服务（Docker / 服务端模式）
 ├── build_exe.py        # PyInstaller 构建脚本
 ├── requirements.txt
+├── .env.example        # Docker / server 模式配置模板（复制为 .env 填真实值）
 ├── Dockerfile          # Docker 草案
 ├── docker-compose.yml  # Docker 草案
 ├── DOCKER_ASSESSMENT.md# 极空间 / Docker 可行性评估
@@ -106,7 +116,7 @@ ytcc-dl/
 └── README.md
 ```
 
-> 注：`tools/`（deno.exe / ffmpeg.exe）与 `dist/`（构建产物、cookie 文件）按 `.gitignore` 不入库，请从官网获取后自行放置。
+> 注：`tools/`（deno.exe / ffmpeg.exe）与 `dist/`（构建产物、cookie 文件）按 `.gitignore` 不入库，请从官网获取后自行放置。仓库内**不含任何真实服务器地址 / UUID / 密码**——所有默认值均为占位符。
 
 ## 延伸
 

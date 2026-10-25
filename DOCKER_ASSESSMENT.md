@@ -21,11 +21,11 @@
 |---|---|---|---|---|
 | 1 | 二进制名写死 `deno.exe`/`ffmpeg.exe` | ytcc_dl.py:64-66 | Dockerfile 里把 Linux 二进制软链成 `.exe`（`ln -s /usr/bin/ffmpeg /app/tools/ffmpeg.exe`） | ❌ 不改 |
 | 2 | 顶部 `import tkinter` 无头会炸 | ytcc_dl.py:34 | 方案A：镜像装 `python3-tk`（体积 +50MB）；方案B：tkinter import 改为懒加载（1 行改动）| 可选 |
-| 3 | CookieCloud host 写死 `192.168.31.116:10888` | ytcc_dl.py:877 | Web 入口用 env 注入 `COOKIECLOUD_HOST`；或容器用 host 网络直连 | ❌ 不改（外部传参） |
+| 3 | CookieCloud host 曾硬编码为内网地址（已修，现读 env `COOKIECLOUD_HOST`，无默认值） | 原 ytcc_dl.py GUI 默认值 | Web 入口用 env 注入 `COOKIECLOUD_HOST`；或容器用 host 网络直连 | ❌ 不改（外部传参） |
 | 4 | 凭据走命令行参数 | smoke_mode | Web 入口从 env（`CC_UUID`/`CC_PASSWORD`）读，不进命令行 | ❌ 不改 |
 | 5 | 输出目录默认 `APP_DIR/ytdub_output` | smoke_mode:887 | 挂卷 `/app/output` + env `OUT_DIR` | ❌ 不改 |
 | 6 | 单任务、无队列 | GUI 设计 | Web 层加后台线程 + 简单队列（避免并发打架）| 新增 web 层 |
-| 7 | `no_proxy` 写死 `192.168.31.116` | ytcc_dl.py:478 | 无害（容器里无效），可忽略或改 env | 可选 |
+| 7 | `no_proxy` 曾写死内网 IP（已修，现为 localhost + CookieCloud 主机名动态拼接） | 原 ytcc_dl.py:478 |
 
 **关键发现**：第 1/3/4/5 条都可以用"Dockerfile 软链 + env 注入 + Web 层传参"完全规避对 `ytcc_dl.py` 的修改。真正必须动代码的只有第 2 条（tkinter 懒加载，1 行）。
 
@@ -60,7 +60,7 @@
 └───────────────┬─────────────────────────────┘
                 │ (host 网络或同网段)
 ┌───────────────▼─────────────────────────────┐
-│ CookieCloud 服务 (192.168.31.116:10888)      │
+│ CookieCloud 服务 (地址见 .env)               │
 │ 代理 (海外站点: 10808)                        │
 └─────────────────────────────────────────────┘
 ```
@@ -79,7 +79,7 @@
    - 需确认你的机型架构；ARM 机型必须打 `linux/arm64` 镜像（deno/ffmpeg/yt-dlp 均有 arm64 支持，已确认可行）。
 
 3. **网络模式**：建议容器用 **host 网络**（或 bridge + 同网段），这样能直接访问：
-   - CookieCloud 服务 `192.168.31.116:10888`（同路由器内网）
+   - CookieCloud 服务（地址经 .env 的 COOKIECLOUD_HOST 注入）
    - 海外代理 `192.168.31.x:10808`（若代理跑在 Windows 本机，需填宿主 LAN IP 而非 127.0.0.1）
    - 国内站点（B站/抖音/微博）直连——极空间本身在国内，出口直连 OK
 

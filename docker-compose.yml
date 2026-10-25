@@ -10,21 +10,23 @@ services:
         TARGETPLATFORM: linux/amd64
     # image: yourname/ytcc-dl:latest
     container_name: ytcc-dl
-    # host 网络最省事：直接复用宿主网络访问 CookieCloud(192.168.31.116:10888) 与代理
+    # host 网络最省事：直接复用宿主网络访问 CookieCloud 与代理（地址见 .env）
     # 若不想用 host，改用 ports + 确保容器与这些服务同网段
     network_mode: host
     # 若不用 host 网络，改为：
     # ports:
     #   - "8899:8899"
+    # 凭据与内网地址经 .env 注入（.env 不入库，见 .gitignore / .env.example），
+    # 本文件只放与拓扑无关的默认值。
+    env_file: .env
     environment:
-      - COOKIECLOUD_HOST=http://192.168.31.116:10888
-      - CC_UUID=你的cookiecloud_uuid
-      - CC_PASSWORD=你的cookiecloud密码
-      # 海外站点（YouTube/X）走此代理；国内站点在代码里强制直连
-      - PROXY_OVERSEAS=http://192.168.31.99:10808
-      - OUT_DIR=/app/output
-      # 若代理本身需账号，可在此加 PROXY_AUTH
+      - COOKIECLOUD_HOST=${COOKIECLOUD_HOST:-}
+      - CC_UUID=${CC_UUID:-}
+      - CC_PASSWORD=${CC_PASSWORD:-}
+      # 海外站点（YouTube/X/TikTok）走此代理；国内站点在代码里强制直连
+      - PROXY_OVERSEAS=${PROXY_OVERSEAS:-}
+      - OUT_DIR=${OUT_DIR:-/app/output}
     volumes:
-      # 下载产物持久化到极空间共享目录（容器重建不丢）
-      - /_volume1/共享盘/Downloads/ytcc:/app/output
+      # 下载产物持久化到宿主持久化目录（容器重建不丢）
+      - ${HOST_DOWNLOAD_DIR:-./output}:/app/output
     restart: unless-stopped

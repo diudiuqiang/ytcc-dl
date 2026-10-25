@@ -2,27 +2,28 @@
 # 适配 Linux：把 Linux 二进制软链成 .exe 名，规避 ytcc_dl.py 里写死的 deno.exe/ffmpeg.exe
 FROM --platform=$TARGETPLATFORM python:3.10-slim
 
+# 默认值全部留空/占位：部署时经 docker-compose 环境变量或 .env 注入真实值，
+# 不在镜像里硬编码任何内网地址（仓库公开，勿泄露拓扑）。
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    # 国内站点直连、海外走代理；以下为容器默认值，可用 docker-compose env 覆盖
-    COOKIECLOUD_HOST=http://192.168.31.116:10888 \
+    COOKIECLOUD_HOST= \
     CC_UUID= \
     CC_PASSWORD= \
-    PROXY_OVERSEAS=http://192.168.31.99:10808 \
+    PROXY_OVERSEAS= \
     OUT_DIR=/app/output
 
-# 系统依赖：ffmpeg、deno 运行库、可选 tkinter（若采用懒加载方案则可去掉 python3-tk）
+# 系统依赖：ffmpeg、deno 运行库。ytcc_dl.py 已做 tkinter 懒加载（GUI 模式才
+# import），无头容器不需要 python3-tk，镜像省 ~50MB。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
-        # python3-tk 仅在"不采用懒加载"时需要；懒加载方案可注释掉以减小镜像
-        python3-tk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 下载 deno（yt-dlp 2026.08+ 的 js 挑战求解器）。构建环境若需代理，取消下一行注释：
-# ENV HTTPS_PROXY=http://192.168.31.99:10808
+# 下载 deno（yt-dlp 2026.08+ 的 js 挑战求解器）。构建环境若需代理，构建时传参：
+#   docker build --build-arg HTTPS_PROXY=http://your-proxy:port -t ytcc-dl .
+ARG HTTPS_PROXY=
 RUN arch=$(dpkg --print-architecture) && \
     case "$arch" in \
       amd64) DENO_ARCH=x86_64 ;; \
