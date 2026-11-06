@@ -1,15 +1,15 @@
 # ytcc-dl — CookieCloud 视频下载器（独立 exe 版）
 
-把「从 **CookieCloud** 拉已登录 cookie → **yt-dlp 2026.08 三件套**下载 →（可选）mp4 转封装」整套链路，**封装成一个带界面的单文件 exe**。无需 Python 环境，双击即用。
+把「从自托管的 **CookieCloud** 读取会话数据 → **yt-dlp 2026.08 三件套**下载 →（可选）mp4 转封装」整套链路，**封装成一个带界面的单文件 exe**。无需 Python 环境，双击即用。
 
 支持 **YouTube / X(Twitter) / B站 / 抖音 / 微博 / 小红书** 六大平台，并自动解析各平台的短链（`t.cn`、`v.douyin.com`、`xhslink.com` / `xhslink.cn`）。
 
 ## 解决了什么
 
-油管 / 各大平台下载在 2024+ 变得很麻烦，这套工具专门踩平了几个连环坑：
+多平台下载在工程上有几个常见的兼容问题，这套工具把它们集中处理掉：
 
-1. **Edge/Chrome 默认 App-Bound Encryption (ABE)**：沙箱无法离线 DPAPI 解密本地 cookie（`yt-dlp` 报 `Failed to decrypt with DPAPI`）。
-   → 用 **CookieCloud**（浏览器扩展把已登录 cookie 同步到你的私有局域网服务器），从服务端拉密文、本地 AES 解密，**完美绕过 ABE**。
+1. **Edge/Chrome 默认 App-Bound Encryption (ABE)**：新版浏览器不再允许外部程序离线读取本地 cookie 数据库（`yt-dlp` 会报 `Failed to decrypt with DPAPI`）。
+   → 改用 **CookieCloud**（浏览器扩展把你自己的会话数据同步到你自托管的服务器），由工具从服务端取回密文、本地 AES 解密，**不再依赖读取浏览器本地 cookie 数据库**。
 2. **yt-dlp 2026.08+ 三件套缺一不可**：
    - 代理必须显式传（沙箱默认 63105 是死代理）→ 本工具默认 `http://127.0.0.1:10808`；
    - nsig 解算需要 **deno**，且 `--js-runtimes` 必须传裸名 `deno`（PATH 找得到才行），不能用 `/c/.../deno.exe` 这种 Git-Bash 路径（yt-dlp 会判 `unavailable`）；
@@ -30,7 +30,7 @@
 
 ## 用法（桌面 GUI）
 
-1. 在 Edge/Chrome 装 **CookieCloud 扩展**，把已登录各平台的 cookie 同步到你的局域网服务器（CookieCloud 可按域名同步多个站点）。
+1. 在 Edge/Chrome 装 **CookieCloud 扩展**，把你自己的会话数据同步到自托管服务器（CookieCloud 可按域名同步多个站点）。
 2. 打开 `ytcc-dl.exe`：
    - 填 **Host / UUID / 密码**（你的 CookieCloud 服务器）；
    - 【下载设置】里选 **平台**（或直接粘贴链接，工具会根据链接域名自动识别平台）；
@@ -84,7 +84,7 @@ cd ytcc-dl
 mkdir -p tools && cp <你的 deno.exe> tools/deno.exe && cp <你的 ffmpeg.exe> tools/ffmpeg.exe
 
 # 2) 用含 tkinter 的 Python 建 venv（推荐系统 Python 3.10）
-C:/Users/youqw/AppData/Local/Programs/Python/Python310/python.exe -m venv .build_venv
+python3.10 -m venv .build_venv   # 用本机自带 tkinter 的 Python 3.10
 .build_venv/Scripts/python.exe -m pip install -r requirements.txt
 .build_venv/Scripts/python.exe build_exe.py
 # 产物： dist/ytcc-dl.exe  （已内嵌 deno.exe + ffmpeg.exe）
