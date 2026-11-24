@@ -108,7 +108,15 @@ def _worker(task_id, url, platform, quality):
         uuid = os.environ.get("CC_UUID") or srv_cfg.get("cc_uuid", "")
         password = os.environ.get("CC_PASSWORD") or srv_cfg.get("cc_password", "")
         conf = ytcc.PLATFORMS.get(platform, ytcc.PLATFORMS["YouTube"])
-        proxy = (os.environ.get("PROXY_OVERSEAS") or srv_cfg.get("proxy") or "") if conf.get("proxy_default") else ""
+        # 与 GUI 同一套判据：默认采用系统代理；海外三站走代理、其余直连
+        proxy_enabled = os.environ.get("PROXY_ENABLED", "1").strip().lower() not in (
+            "0", "false", "no")
+        proxy = ytcc.effective_proxy(
+            platform,
+            os.environ.get("PROXY_MODE") or srv_cfg.get("proxy_mode") or "system",
+            os.environ.get("PROXY_OVERSEAS") or srv_cfg.get("proxy") or "",
+            enabled=proxy_enabled,
+        )
         out_dir = os.environ.get("OUT_DIR", "/app/output")
         os.makedirs(out_dir, exist_ok=True)
 

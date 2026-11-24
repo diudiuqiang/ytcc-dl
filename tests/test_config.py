@@ -42,14 +42,26 @@ class ConfigTestBase(unittest.TestCase):
 
     def test_save_load_roundtrip(self):
         ytcc_config.save_config("http://127.0.0.1:10888", "uuid-abc",
-                                "p@ss:w0rd%含中文", "http://127.0.0.1:10808")
+                                "p@ss:w0rd%含中文", "http://127.0.0.1:10808",
+                                proxy_mode="all")
         cfg, status = ytcc_config.load_config()
         self.assertEqual(status, "ok")
         self.assertEqual(cfg["cc_host"], "http://127.0.0.1:10888")
         self.assertEqual(cfg["cc_uuid"], "uuid-abc")
         self.assertEqual(cfg["cc_password"], "p@ss:w0rd%含中文")
         self.assertEqual(cfg["proxy"], "http://127.0.0.1:10808")
+        self.assertEqual(cfg["proxy_mode"], "all")
         self.assertGreater(cfg["saved_at"], 0)
+
+    def test_legacy_config_defaults_to_system(self):
+        """旧版配置没有 proxy_mode 字段：读回时按 system（采用系统代理），不能崩/不能空。"""
+        with open(self.cfg_path, "w", encoding="utf-8") as fh:
+            fh.write("[ytcc-dl]\ncc_host = h\ncc_uuid = u\ncc_password = p\n"
+                     "proxy = http://127.0.0.1:10808\n"
+                     f"saved_at = {int(time.time())}\n")
+        cfg, status = ytcc_config.load_config()
+        self.assertEqual(status, "ok")
+        self.assertEqual(cfg["proxy_mode"], "system")
 
     def test_password_percent_not_interpolated(self):
         """密码含 % 时若用默认 BasicInterpolation 会炸——必须 interpolation=None。"""
@@ -185,24 +197,57 @@ class GuiConfigIntegrationTest(unittest.TestCase):
             self.assertEqual(app2.e_uuid.get(), "test-uuid")
             self.assertEqual(app2.e_pass.get(), "test-pass")
             self.assertEqual(app2.e_proxy.get(), "http://127.0.0.1:9999")
+            self.assertEqual(app2.var_proxy_mode.get(), "采用系统代理（推荐）")
         finally:
             root2.destroy()
 
-    def test_platform_switch_preserves_custom_proxy(self):
+    def test_platform_switch_keeps_proxy_and_updates_route(self):
+        """代理地址不随平台切换被冲掉；平台提示反映真实路由；海外三站排前面。"""
+        import ytcc_dl
         root, app = self._new_app()
         try:
-            # 自定义代理：切平台不被冲掉
             app.e_proxy.delete(0, "end")
             app.e_proxy.insert(0, "http://127.0.0.1:9999")
-            app.var_platform.set("Bilibili (B站)")
-            app.on_platform_change()
-            self.assertEqual(app.e_proxy.get(), "http://127.0.0.1:9999")
-            # 平台默认值：切平台时替换为新平台默认
+            for plat in ("YouTube", "X (Twitter)", "TikTok"):
+                app.var_platform.set(plat)
+                app.on_platform_change()
+                self.assertEqual(app.e_proxy.get(), "http://127.0.0.1:9999")
+                self.assertIn("🌐 走代理", app.lbl_note.cget("text"))
+            for plat in ("Bilibili (B站)", "抖音 (Douyin)", "微博 (Weibo)",
+                         "小红书 (Xiaohongshu)"):
+                app.var_platform.set(plat)
+                app.on_platform_change()
+                self.assertEqual(app.e_proxy.get(), "http://127.0.0.1:9999")
+                self.assertIn("🏠 直连", app.lbl_note.cget("text"))
+            self.assertEqual(list(ytcc_dl.OVERSEAS_PLATFORMS),
+                             list(ytcc_dl.PLATFORMS)[:3])
+        finally:
+            root.destroy()
+
+    def test_proxy_mode_dropdown_roundtrip(self):
+        import ytcc_dl
+        root, app = self._new_app()
+        try:
             app.e_proxy.delete(0, "end")
-            app.e_proxy.insert(0, "http://127.0.0.1:10808")
-            app.var_platform.set("Bilibili (B站)")
+            app.e_proxy.insert(0, "http://127.0.0.1:9999")
+            app.var_platform.set("抖音 (Douyin)")
+            app.var_proxy_mode.set(ytcc_dl.PROXY_MODE_LABELS["all"])
             app.on_platform_change()
-            self.assertEqual(app.e_proxy.get(), "")
+            self.assertIn("🌐 走代理", app.lbl_note.cget("text"))  # all：国内也代理
+            app.var_proxy_mode.set(ytcc_dl.PROXY_MODE_LABELS["none"])
+            app.on_platform_change()
+            self.assertIn("🏠 直连", app.lbl_note.cget("text"))    # none：全直连
+            app.var_proxy_mode.set(ytcc_dl.PROXY_MODE_LABELS["auto"])
+            app.e_host.delete(0, "end")
+            app.e_host.insert(0, "http://127.0.0.1:10888")
+            app.e_uuid.delete(0, "end")
+            app.e_uuid.insert(0, "u1")
+            app.e_pass.delete(0, "end")
+            app.e_pass.insert(0, "p1")
+            app.on_save_config()
+            cfg, status = ytcc_config.load_config()
+            self.assertEqual(status, "ok")
+            self.assertEqual(cfg["proxy_mode"], "auto")
         finally:
             root.destroy()
 
@@ -216,6 +261,59 @@ class GuiConfigIntegrationTest(unittest.TestCase):
             self.assertEqual(cfg["cc_uuid"], "u1")
         finally:
             root.destroy()
+
+
+class ProxyModeTest(unittest.TestCase):
+    """代理分流纯函数：不依赖 GUI / 网络。"""
+
+    def setUp(self):
+        import ytcc_dl
+        self.ytcc = ytcc_dl
+
+    def test_auto_only_overseas(self):
+        p = "http://127.0.0.1:10808"
+        for plat in self.ytcc.OVERSEAS_PLATFORMS:
+            self.assertEqual(self.ytcc.effective_proxy(plat, "auto", p), p)
+        for plat in ("Bilibili (B站)", "抖音 (Douyin)", "微博 (Weibo)",
+                     "小红书 (Xiaohongshu)"):
+            self.assertEqual(self.ytcc.effective_proxy(plat, "auto", p), "")
+
+    def test_all_and_none(self):
+        y = self.ytcc
+        p = "socks5://127.0.0.1:1080"
+        for plat in y.PLATFORMS:
+            self.assertEqual(y.effective_proxy(plat, "all", p), p)
+            self.assertEqual(y.effective_proxy(plat, "none", p), "")
+        # 全部走代理但没填地址 → 仍直连，不能把空串当有效代理传给 yt-dlp
+        self.assertEqual(y.effective_proxy("YouTube", "all", ""), "")
+
+    def test_system_mode_and_one_click_toggle(self):
+        y = self.ytcc
+        p = "http://127.0.0.1:10808"
+        # system 模式：手填地址优先；海外走代理、国内直连（与 auto 同分流）
+        self.assertEqual(y.effective_proxy("YouTube", "system", p), p)
+        self.assertEqual(y.effective_proxy("抖音 (Douyin)", "system", p), "")
+        # 一键代理关闭：无论什么模式都强制直连
+        self.assertEqual(y.effective_proxy("YouTube", "system", p, enabled=False), "")
+        self.assertEqual(y.effective_proxy("YouTube", "all", p, enabled=False), "")
+        # system 且地址留空时回落系统代理（本机有系统代理则应拿到非空值）
+        import unittest.mock as _mock
+        with _mock.patch.object(y, "detect_system_proxy", return_value=(p, "test")):
+            self.assertEqual(y.effective_proxy("YouTube", "system", ""), p)
+            self.assertEqual(y.effective_proxy("抖音 (Douyin)", "system", ""), "")
+
+    def test_mode_key_normalization(self):
+        y = self.ytcc
+        self.assertEqual(y.proxy_mode_key(y.PROXY_MODE_LABELS["all"]), "all")
+        self.assertEqual(y.proxy_mode_key("智能分流（仅海外3站）"), "auto")
+        self.assertEqual(y.proxy_mode_key("采用系统代理（推荐）"), "system")
+        self.assertEqual(y.proxy_mode_key("weird-value"), "system")  # 非法值回落默认 system
+        self.assertEqual(y.proxy_mode_key(True), "system")  # CLI 无值 flag
+
+    def test_version_and_file_naming_material(self):
+        import version
+        self.assertTrue(version.VERSION)
+        self.assertEqual(len(version.VERSION.split(".")), 3)
 
 
 if __name__ == "__main__":

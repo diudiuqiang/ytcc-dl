@@ -26,7 +26,7 @@
 用法：
     import ytcc_config
     cfg, status = ytcc_config.load_config()   # status: ok/missing/expired/error
-    path = ytcc_config.save_config(host, uuid, password, proxy)
+    path = ytcc_config.save_config(host, uuid, password, proxy, proxy_mode="system")
 """
 
 import base64
@@ -133,15 +133,17 @@ def _decrypt_secret(stored, warnings):
 # 读写
 # ---------------------------------------------------------------------------
 def _empty_cfg():
-    return {"cc_host": "", "cc_uuid": "", "cc_password": "", "proxy": "", "saved_at": 0}
+    return {"cc_host": "", "cc_uuid": "", "cc_password": "", "proxy": "",
+            "proxy_mode": "system", "saved_at": 0}
 
 
 def load_config():
     """读取本地配置，返回 (cfg, status)。
 
     status: ok=已加载 / missing=无配置文件 / expired=超期已自动销毁 / error=文件损坏已忽略。
-    cfg 恒为 dict（五个键齐全，值可能为空串）；密码解密失败时 cc_password
-    置空并在 cfg["warning"] 附原因（绝不把乱码当密码用）。
+    cfg 恒为 dict（六个键齐全，值可能为空串）；proxy_mode 缺省按 "system"，
+    兼容旧版配置文件。密码解密失败时 cc_password 置空并在 cfg["warning"]
+    附原因（绝不把乱码当密码用）。
     """
     path = config_path()
     if not os.path.isfile(path):
@@ -169,6 +171,7 @@ def load_config():
         "cc_uuid": (sec.get("cc_uuid") or "").strip(),
         "cc_password": _decrypt_secret(sec.get("cc_password") or "", warnings),
         "proxy": (sec.get("proxy") or "").strip(),
+        "proxy_mode": (sec.get("proxy_mode") or "system").strip() or "system",
         "saved_at": saved_at,
     }
     if warnings:
@@ -176,8 +179,11 @@ def load_config():
     return cfg, "ok"
 
 
-def save_config(cc_host, cc_uuid, cc_password, proxy):
-    """保存配置（原子写入），返回文件路径。密码字段按平台能力加密。"""
+def save_config(cc_host, cc_uuid, cc_password, proxy, proxy_mode="system"):
+    """保存配置（原子写入），返回文件路径。密码字段按平台能力加密。
+
+    proxy_mode 取 system / auto / all / none；旧调用方不传时按 system（采用系统代理）兼容。
+    """
     path = config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # interpolation=None：密码含 % 时默认插值语法会炸
@@ -187,6 +193,7 @@ def save_config(cc_host, cc_uuid, cc_password, proxy):
         "cc_uuid": (cc_uuid or "").strip(),
         "cc_password": _encrypt_secret(cc_password or ""),
         "proxy": (proxy or "").strip(),
+        "proxy_mode": (proxy_mode or "system").strip() or "system",
         "saved_at": str(int(time.time())),
     }
     tmp = path + ".tmp"

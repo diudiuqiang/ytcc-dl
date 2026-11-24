@@ -32,6 +32,9 @@ import time
 import urllib.request
 import urllib.parse
 
+# 单一版本来源（GUI 标题 / CLI --version / exe 文件名 / README 均引用）
+from version import VERSION
+
 # tkinter 延迟到 GUI 模式才 import：server.py 在无头容器里 import 本模块时，
 # 不再因缺 python3-tk 直接崩（镜像可省掉 ~50MB 的 tk 依赖）。
 tk = None
@@ -260,8 +263,94 @@ def build_format(quality, custom_fmt=None):
 
 
 # ---------------------------------------------------------------------------
+# 代理模式：system=采用系统代理（默认，点「一键代理」即可开关）
+#           auto=智能分流 / all=全部走代理 / none=全部直连
+#   GUI 下拉显示中文标签，内部与配置文件、CLI 统一用四个键。
+# ---------------------------------------------------------------------------
+PROXY_MODE_AUTO, PROXY_MODE_ALL, PROXY_MODE_NONE = "auto", "all", "none"
+PROXY_MODE_SYSTEM = "system"
+PROXY_MODE_LABELS = {
+    PROXY_MODE_SYSTEM: "采用系统代理（推荐）",
+    PROXY_MODE_AUTO: "智能分流（仅海外3站）",
+    PROXY_MODE_ALL: "全部走代理",
+    PROXY_MODE_NONE: "全部直连",
+}
+_PROXY_LABEL_TO_MODE = {v: k for k, v in PROXY_MODE_LABELS.items()}
+OVERSEAS_PLATFORMS = ("YouTube", "X (Twitter)", "TikTok")
+
+
+def proxy_mode_key(value):
+    """把 GUI 中文标签 / CLI 参数 / 配置旧值统一归一到四个模式键。"""
+    s = str(value or "").strip()
+    if s in _PROXY_LABEL_TO_MODE:
+        return _PROXY_LABEL_TO_MODE[s]
+    return s if s in PROXY_MODE_LABELS else PROXY_MODE_SYSTEM
+
+
+def detect_system_proxy():
+    """读取系统代理：Windows WinINET 注册表优先，再回退环境变量。
+
+    返回 (proxy_url, source)；没开系统代理返回 ('', '')。
+    注册表里的 ProxyServer 可能是 "http=host:port;https=host:port" 或裸 "host:port"。
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+            try:
+                enabled = int(winreg.QueryValueEx(key, "ProxyEnable")[0])
+                server = str(winreg.QueryValueEx(key, "ProxyServer")[0] or "").strip()
+            finally:
+                winreg.CloseKey(key)
+            if enabled and server:
+                picked = ""
+                if "=" in server:
+                    table = dict(part.split("=", 1) for part in server.split(";")
+                                 if "=" in part)
+                    picked = table.get("https") or table.get("http") or ""
+                else:
+                    picked = server
+                picked = picked.strip()
+                if picked and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", picked):
+                    picked = "http://" + picked
+                if picked and "127.0.0.1:1" not in picked:  # WinINET 关闭占位值
+                    return picked, "Windows 系统代理"
+        except Exception:
+            pass
+    for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+              "HTTP_PROXY", "http_proxy"):
+        val = (os.environ.get(k) or "").strip()
+        if val:
+            return val, k
+    return "", ""
+
+
+def effective_proxy(platform, mode, proxy, enabled=True):
+    """按代理模式决定本次任务真正使用的代理地址（''=直连）。
+
+    system 模式在代理框留空时自动读取系统代理；auto/system 都只让
+    YouTube / X / TikTok 走代理，国内站点强制直连。enabled=False 是
+    GUI「一键代理」关闭态——无论什么模式都强制直连。
+    """
+    if not enabled:
+        return ""
+    mode = proxy_mode_key(mode)
+    proxy = str(proxy or "").strip()
+    if mode == PROXY_MODE_NONE:
+        return ""
+    if mode == PROXY_MODE_SYSTEM and not proxy:
+        proxy, _src = detect_system_proxy()
+    if mode == PROXY_MODE_ALL:
+        return proxy
+    return proxy if platform in OVERSEAS_PLATFORMS else ""
+
+
+# ---------------------------------------------------------------------------
 # 平台配置：CookieCloud 拉取域名、cookie 文件名、是否强制 cookie、默认代理、提示
 #   yt-dlp 原生支持 B站/抖音/微博，无需单独写下载器；本表只管「cookie 域名 / 代理 / 提示」。
+#   顺序即 GUI 下拉顺序：前三个走代理（海外），后四个直连（国内）。
 # ---------------------------------------------------------------------------
 PLATFORMS = {
     "YouTube": {
@@ -269,43 +358,14 @@ PLATFORMS = {
         "cookie_file": "youtube_cookies.txt",
         "need_cookie": True,
         "proxy_default": "http://127.0.0.1:10808",
-        "note": "需登录 cookie；走代理访问",
+        "note": "需登录 cookie；海外站点",
     },
     "X (Twitter)": {
         "domains": ("x.com", "twitter.com", "t.co"),
         "cookie_file": "x_cookies.txt",
         "need_cookie": False,
         "proxy_default": "http://127.0.0.1:10808",
-        "note": "公开视频可免登录；走代理访问",
-    },
-    "Bilibili (B站)": {
-        "domains": ("bilibili.com", "b23.tv"),
-        "cookie_file": "bilibili_cookies.txt",
-        "need_cookie": False,
-        "proxy_default": "",
-        "note": "公开视频免登录（高清需登录）；国内站点建议直连",
-        "extra_opts": {"http_headers": {"Referer": "https://www.bilibili.com/"}},
-    },
-    "抖音 (Douyin)": {
-        "domains": ("douyin.com", "v.douyin.com"),
-        "cookie_file": "douyin_cookies.txt",
-        "need_cookie": False,
-        "proxy_default": "",
-        "note": "部分视频需登录 cookie；国内站点建议直连",
-    },
-    "微博 (Weibo)": {
-        "domains": ("weibo.com", "weibo.cn"),
-        "cookie_file": "weibo_cookies.txt",
-        "need_cookie": False,
-        "proxy_default": "",
-        "note": "公开视频免登录；支持 t.cn 短链直连解析；国内站点建议直连",
-    },
-    "小红书 (Xiaohongshu)": {
-        "domains": ("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
-        "cookie_file": "xiaohongshu_cookies.txt",
-        "need_cookie": False,
-        "proxy_default": "",
-        "note": "部分内容需登录 cookie；支持 xhslink.com / xhslink.cn 短链直连解析；国内站点建议直连",
+        "note": "公开视频可免登录；海外站点",
     },
     "TikTok": {
         "domains": ("tiktok.com",),
@@ -314,7 +374,36 @@ PLATFORMS = {
         "proxy_default": "http://127.0.0.1:10808",
         # 风控实况（2026-10-25 测）：国内直连不可达；本地代理出口多被 TikTok 标记
         # ("Your IP address is blocked")，遇此报错就换干净落地（如自己的 VPS 节点）。
-        "note": "公开视频可免登录；国内被墙须走代理；⚠ 代理出口 IP 被墙会报 IP blocked，换干净落地即可",
+        "note": "公开视频可免登录；⚠ 代理出口 IP 被墙会报 IP blocked，换干净落地即可",
+    },
+    "Bilibili (B站)": {
+        "domains": ("bilibili.com", "b23.tv"),
+        "cookie_file": "bilibili_cookies.txt",
+        "need_cookie": False,
+        "proxy_default": "",
+        "note": "公开视频免登录（高清需登录）；国内站点",
+        "extra_opts": {"http_headers": {"Referer": "https://www.bilibili.com/"}},
+    },
+    "抖音 (Douyin)": {
+        "domains": ("douyin.com", "v.douyin.com"),
+        "cookie_file": "douyin_cookies.txt",
+        "need_cookie": False,
+        "proxy_default": "",
+        "note": "部分视频需登录 cookie；国内站点",
+    },
+    "微博 (Weibo)": {
+        "domains": ("weibo.com", "weibo.cn"),
+        "cookie_file": "weibo_cookies.txt",
+        "need_cookie": False,
+        "proxy_default": "",
+        "note": "公开视频免登录；支持 t.cn 短链直连解析；国内站点",
+    },
+    "小红书 (Xiaohongshu)": {
+        "domains": ("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
+        "cookie_file": "xiaohongshu_cookies.txt",
+        "need_cookie": False,
+        "proxy_default": "",
+        "note": "部分内容需登录 cookie；支持 xhslink.com / xhslink.cn 短链直连解析；国内站点",
     },
 }
 
@@ -699,8 +788,8 @@ class App:
     def __init__(self, root):
         _ensure_tk()
         self.root = root
-        root.title("ytcc-dl · 多平台视频下载器")
-        root.geometry("720x680")
+        root.title(f"ytcc-dl v{VERSION} · 多平台视频下载器")
+        root.geometry("720x700")
         root.resizable(True, True)
 
         self.tools = locate_tools()
@@ -760,38 +849,65 @@ class App:
         self.cb_q.grid(row=9, column=1, sticky="w", padx=4)
         # 输出格式固定为 mp4（跨设备兼容，避免 mkv 在手机/别的机器上无声）；
         # 「兼容模式」复选框控制是否把视频重编码为 H.264（默认开，手机最稳）。
-        ttk.Label(f, text="代理").grid(row=10, column=0, sticky="w")
-        self.e_proxy = ttk.Entry(f, width=30)
-        self.e_proxy.grid(row=10, column=1, sticky="ew", padx=4)
         self.var_reencode = tk.BooleanVar(value=True)
         ttk.Checkbutton(f, text="兼容模式(重编码H.264)", variable=self.var_reencode).grid(
-            row=10, column=2, sticky="w", padx=4)
+            row=9, column=2, sticky="w", padx=4)
 
-        ttk.Label(f, text="自定义格式").grid(row=11, column=0, sticky="w")
+        # 代理：默认「采用系统代理」+「一键代理」勾选框——不用填地址、不用选平台，
+        # 开箱即走代理；取消勾选=一键全直连。下拉仅给想细调的人留着。
+        ttk.Label(f, text="代理模式").grid(row=10, column=0, sticky="w")
+        self.var_proxy_mode = tk.StringVar(value=PROXY_MODE_LABELS[PROXY_MODE_SYSTEM])
+        self.cb_mode = ttk.Combobox(f, textvariable=self.var_proxy_mode, width=20,
+                                    values=list(PROXY_MODE_LABELS.values()), state="readonly")
+        self.cb_mode.grid(row=10, column=1, sticky="w", padx=4)
+        self.cb_mode.bind("<<ComboboxSelected>>", self.on_platform_change)
+        self.var_proxy_enabled = tk.BooleanVar(value=True)
+        self.cb_proxy_on = ttk.Checkbutton(f, text="一键代理（取消=全直连）",
+                                           variable=self.var_proxy_enabled,
+                                           command=self.on_platform_change)
+        self.cb_proxy_on.grid(row=10, column=2, sticky="w", padx=4)
+
+        ttk.Label(f, text="代理地址").grid(row=11, column=0, sticky="w")
+        self.e_proxy = ttk.Entry(f, width=30)
+        self.e_proxy.grid(row=11, column=1, sticky="ew", padx=4)
+        ttk.Label(f, text="留空=自动采用系统代理", foreground="gray", font=("", 8)).grid(
+            row=11, column=2, sticky="w", padx=4)
+
+        ttk.Label(f, text="自定义格式").grid(row=12, column=0, sticky="w")
         self.e_fmt = ttk.Entry(f, width=50)
-        self.e_fmt.grid(row=11, column=1, columnspan=2, sticky="ew", padx=4)
+        self.e_fmt.grid(row=12, column=1, columnspan=2, sticky="ew", padx=4)
         self.e_fmt.insert(0, "选「自定义」画质时生效，如 bv[height<=720]+ba/best")
 
-        ttk.Label(f, text="输出目录").grid(row=12, column=0, sticky="w")
+        ttk.Label(f, text="输出目录").grid(row=13, column=0, sticky="w")
         self.e_out = ttk.Entry(f, width=50)
         self.e_out.insert(0, os.path.join(APP_DIR, "ytcc-dl_output"))
-        self.e_out.grid(row=12, column=1, sticky="ew", padx=4)
-        ttk.Button(f, text="浏览", command=self.on_browse).grid(row=12, column=2, padx=4)
+        self.e_out.grid(row=13, column=1, sticky="ew", padx=4)
+        ttk.Button(f, text="浏览", command=self.on_browse).grid(row=13, column=2, padx=4)
 
         self.btn_dl = ttk.Button(f, text="② 开始下载", command=self.on_download)
-        self.btn_dl.grid(row=13, column=0, pady=6, sticky="w")
+        self.btn_dl.grid(row=14, column=0, pady=6, sticky="w")
 
         # --- 日志（放在所有控件下方，行号必须 > 下载按钮的 row，否则格子重叠）---
         ttk.Label(f, text="运行日志", font=("", 10, "bold")).grid(
-            row=14, column=0, columnspan=3, sticky="w", pady=(8, 2))
+            row=15, column=0, columnspan=3, sticky="w", pady=(8, 2))
         self.log = scrolledtext.ScrolledText(f, width=90, height=18, state="disabled",
                                              font=("Consolas", 9))
-        self.log.grid(row=15, column=0, columnspan=3, sticky="nsew")
-        f.rowconfigure(15, weight=1)
+        self.log.grid(row=16, column=0, columnspan=3, sticky="nsew")
+        f.rowconfigure(16, weight=1)
         f.columnconfigure(1, weight=1)
 
-        self.on_platform_change()
         self._load_saved_config()
+        # 没保存过代理地址时，探测系统代理填进框里（可见可改；留空也会自动检测）
+        if not self.e_proxy.get().strip():
+            detected, source = detect_system_proxy()
+            if detected:
+                self.e_proxy.insert(0, detected)
+                self.log_msg(f"✓ 已自动采用{source}：{detected}（可手改；留空也会自动检测）")
+            else:
+                self.log_msg("ℹ 未检测到系统代理，海外站点可能无法下载（可手动填代理地址）")
+        self.on_platform_change()
+        self.log_msg(f"ytcc-dl v{VERSION} 就绪 · 一键代理="
+                     f"{'开' if self.var_proxy_enabled.get() else '关'}")
         self._check_tools()
 
     def _check_tools(self):
@@ -815,26 +931,36 @@ class App:
             self.e_out.insert(0, d)
 
     def on_platform_change(self, event=None):
-        """切换平台时同步：提示语 + 代理默认值（国内站点直连，海外走代理）。
-        代理框已有用户自定义值（非空且不等于任何平台默认值）时不动它——
-        否则切个平台就把用户手填/配置记忆里的代理冲掉了。"""
+        """切换平台 / 代理模式时刷新提示：显示该平台本次到底走不走代理。
+
+        代理地址框不再随平台变化——它是「海外代理地址」，由代理模式统一决定
+        用不用它，切国内站不会把用户手填的地址冲掉。
+        """
         plat = self.var_platform.get()
-        conf = PLATFORMS.get(plat, {})
-        note = conf.get("note", "")
-        self.lbl_note.configure(text=note if note else "")
-        cur = self.e_proxy.get().strip()
-        known_defaults = {c.get("proxy_default", "") for c in PLATFORMS.values()}
-        if not cur or cur in known_defaults:
-            self.e_proxy.delete(0, "end")
-            self.e_proxy.insert(0, conf.get("proxy_default", ""))
+        note = PLATFORMS.get(plat, {}).get("note", "")
+        effective = effective_proxy(plat, self.var_proxy_mode.get(), self.e_proxy.get(),
+                                    enabled=self.var_proxy_enabled.get())
+        if effective:
+            route = "🌐 走代理"
+        elif not self.var_proxy_enabled.get():
+            route = "🏠 直连（一键代理已关）"
+        elif proxy_mode_key(self.var_proxy_mode.get()) == PROXY_MODE_ALL:
+            route = "🏠 直连（代理地址为空）"
+        else:
+            route = "🏠 直连"
+        self.lbl_note.configure(text=f"{route} · {note}" if note else route)
+
+    def _mode_for_save(self):
+        """保存配置时把「一键代理」开关状态落进 proxy_mode，下次启动保持一致。"""
+        if not self.var_proxy_enabled.get():
+            return PROXY_MODE_NONE
+        return proxy_mode_key(self.var_proxy_mode.get())
 
     # ------------------------------------------------------------------
     # 本地配置持久化：启动预填 / 手动保存 / 拉取成功后自动续期
     # ------------------------------------------------------------------
     def _load_saved_config(self):
-        """启动时把本机保存的 CookieCloud 凭据 + 代理预填进输入框。
-        必须在 on_platform_change() 之后调用——否则平台默认代理会把
-        保存的代理值覆盖掉。"""
+        """启动时把本机保存的 CookieCloud 凭据 + 代理模式/地址预填进输入框。"""
         if ytcc_config is None:
             return
         cfg, status = ytcc_config.load_config()
@@ -851,6 +977,10 @@ class App:
                 if val:
                     entry.delete(0, "end")
                     entry.insert(0, val)
+            # 旧配置无 proxy_mode 键 → 归一为 system（自动采用系统代理）
+            mode_key = proxy_mode_key(cfg.get("proxy_mode"))
+            self.var_proxy_mode.set(PROXY_MODE_LABELS[mode_key])
+            self.var_proxy_enabled.set(mode_key != PROXY_MODE_NONE)
             saved = time.strftime("%Y-%m-%d %H:%M", time.localtime(cfg.get("saved_at", 0)))
             self.log_msg(f"✓ 已加载本机保存的配置（{saved} 保存，下次打开自动填入）")
             self.lbl_save.configure(text=f"配置来源：{path}", foreground="gray")
@@ -873,7 +1003,8 @@ class App:
             messagebox.showwarning("Host 格式", "CookieCloud 地址需以 http:// 或 https:// 开头")
             return
         try:
-            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip())
+            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip(),
+                                           self._mode_for_save())
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
             return
@@ -887,7 +1018,8 @@ class App:
         if ytcc_config is None:
             return
         try:
-            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip())
+            path = ytcc_config.save_config(host, uuid, pwd, self.e_proxy.get().strip(),
+                                           self._mode_for_save())
             self.lbl_save.configure(text=f"已自动保存 → {path}", foreground="green")
             self.log_msg("✓ 凭据验证成功，配置已自动保存（下次打开自动填入）")
         except Exception as e:
@@ -967,7 +1099,10 @@ class App:
             messagebox.showerror("缺少工具", "tools/ 下缺少 deno.exe 或 ffmpeg.exe")
             return
 
-        proxy = self.e_proxy.get().strip()
+        # 默认自动采用系统代理；海外三站走代理、国内站点恒直连；
+        # 「一键代理」取消勾选则强制全直连
+        proxy = effective_proxy(plat, self.var_proxy_mode.get(), self.e_proxy.get(),
+                                enabled=self.var_proxy_enabled.get())
         out_dir = self.e_out.get().strip() or os.path.join(APP_DIR, "ytcc-dl_output")
         quality = self.var_quality.get()
         cust = self.e_fmt.get().strip()
@@ -980,7 +1115,8 @@ class App:
         reencode = self.var_reencode.get()
         self.btn_dl.configure(state="disabled")
         self.log_msg("=" * 60)
-        self.log_msg(f"▶ 平台={plat}  画质={quality}  兼容模式={reencode}")
+        self.log_msg(f"▶ 平台={plat}  画质={quality}  兼容模式={reencode}  "
+                     f"代理={self.var_proxy_mode.get()} → {'启用' if proxy else '直连'}")
 
         def done(ok, path, err):
             if ok:
@@ -1051,12 +1187,21 @@ def smoke_mode(args):
         if not host:
             log("✗ 缺少 --host（CookieCloud 服务器地址，如 http://192.168.1.100:10888）")
             return 2
-        # 代理默认按平台：海外站点走代理，国内站点（B站/抖音/微博）直连
+        # 代理模式优先：显式 --proxy-mode > 本机配置 > 默认智能分流
         _plat = args.get("--platform") or "YouTube"
         _conf = PLATFORMS.get(_plat, PLATFORMS["YouTube"])
-        proxy = args.get("--proxy")
-        if proxy is None:
-            proxy = cfg.get("proxy") or _conf.get("proxy_default", "http://127.0.0.1:10808")
+        _mode = proxy_mode_key(args.get("--proxy-mode") or cfg.get("proxy_mode"))
+        _enabled = "--no-proxy" not in args
+        _raw_proxy = args.get("--proxy")
+        if _raw_proxy is None:
+            _raw_proxy = cfg.get("proxy")
+            if not _raw_proxy and _mode == PROXY_MODE_SYSTEM:
+                pass  # system 模式留空 → effective_proxy 自动读系统代理
+            elif not _raw_proxy:
+                _raw_proxy = _conf.get("proxy_default", "http://127.0.0.1:10808")
+        proxy = effective_proxy(_plat, _mode, _raw_proxy, enabled=_enabled)
+        log(f"ytcc-dl v{VERSION} · 代理模式={_mode} · 一键代理={'开' if _enabled else '关'}"
+            f" · 本次{'走代理 ' + proxy if proxy else '直连'}")
         out_dir = args.get("--out") or os.path.join(APP_DIR, "smoke_out")
         reencode = "--no-reencode" not in args
         platform = _plat
@@ -1099,8 +1244,15 @@ def smoke_mode(args):
 
 
 def main():
-    _ensure_tk()
     argv = sys.argv[1:]
+    if "--version" in argv or "-V" in argv:
+        # 纯文本输出，不加载 tkinter（窗口版 exe 下 stdout 可能不存在）
+        try:
+            print(f"ytcc-dl {VERSION}")
+        except Exception:
+            pass
+        return
+    _ensure_tk()
     if "--smoke" in argv:
         sys.exit(smoke_mode(parse_kv(argv)))
     root = tk.Tk()
